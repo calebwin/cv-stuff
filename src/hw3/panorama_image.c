@@ -100,6 +100,7 @@ image find_and_draw_matches(image a, image b, float sigma, float thresh, int nms
     descriptor *ad = harris_corner_detector(a, sigma, thresh, nms, &an);
     descriptor *bd = harris_corner_detector(b, sigma, thresh, nms, &bn);
     match *m = match_descriptors(ad, an, bd, bn, &mn);
+    printf("here1");
 
     mark_corners(a, ad, an);
     mark_corners(b, bd, bn);
@@ -117,8 +118,11 @@ image find_and_draw_matches(image a, image b, float sigma, float thresh, int nms
 // returns: l1 distance between arrays (sum of absolute differences).
 float l1_distance(float *a, float *b, int n)
 {
-    // TODO: return the correct number.
-    return 0;
+    float res = 0.0;
+    for (int i = 0; i < n; i++) {
+        res += fabs(b[i] - a[i]);
+    }
+    return res;
 }
 
 // Finds best matches between descriptors of two images.
@@ -134,25 +138,52 @@ match *match_descriptors(descriptor *a, int an, descriptor *b, int bn, int *mn)
     // We will have at most an matches.
     *mn = an;
     match *m = calloc(an, sizeof(match));
-    for(j = 0; j < an; ++j){
-        // TODO: for every descriptor in a, find best match in b.
+    for(j = 0; j < an; ++j) {
+        descriptor a_j = a[j];
+
+        // for every descriptor in a, find best match in b.
         // record ai as the index in *a and bi as the index in *b.
+
+        float bdist = -1.0;
         int bind = 0; // <- find the best match
+        for (i = 0; i < bn; ++i) {
+            descriptor b_i = b[i];
+            float distance = l1_distance(a_j.data, b_i.data, MIN(a_j.n, b_i.n));
+            if (bdist < 0.0 || distance < bdist) {
+                bdist = distance;
+                bind = i;
+            }
+        }
+        
         m[j].ai = j;
         m[j].bi = bind; // <- should be index in b.
         m[j].p = a[j].p;
         m[j].q = b[bind].p;
-        m[j].distance = 0; // <- should be the smallest L1 distance!
+        m[j].distance = bdist; // <- should be the smallest L1 distance!
     }
 
     int count = 0;
     int *seen = calloc(bn, sizeof(int));
-    // TODO: we want matches to be injective (one-to-one).
+    // we want matches to be injective (one-to-one).
     // Sort matches based on distance using match_compare and qsort.
     // Then throw out matches to the same element in b. Use seen to keep track.
     // Each point should only be a part of one match.
     // Some points will not be in a match.
     // In practice just bring good matches to front of list, set *mn.
+    qsort(m, an, sizeof(match), match_compare);
+    printf("an=%d, bn=%d\n", an, bn);
+    for (i = 0; i < an; i++) {
+        match curr_match = m[i];
+        if (seen[curr_match.bi] != 1) {
+            // Increment count and mark as seen
+            count++;
+            seen[curr_match.bi] = 1;
+
+            // Move to the front of the list
+            m[count - 1] = m[i];
+        }
+    }
+    printf("count=%d\n", count);
     *mn = count;
     free(seen);
     return m;
@@ -164,11 +195,19 @@ match *match_descriptors(descriptor *a, int an, descriptor *b, int bn, int *mn)
 // returns: point projected using the homography.
 point project_point(matrix H, point p)
 {
+    // project point p with homography H.
+
     matrix c = make_matrix(3, 1);
-    // TODO: project point p with homography H.
+    c.data[0][0] = p.x;
+    c.data[1][0] = p.y;
+    c.data[2][0] = 1.0;
+    // printf("attempt: H.rows=%d, H.cols=%d\n", H.rows, H.cols);
+    matrix res = matrix_mult_matrix(H, c);
+    // printf("success: H.rows=%d, H.cols=%d\n", H.rows, H.cols);
+
     // Remember that homogeneous coordinates are equivalent up to scalar.
     // Have to divide by.... something...
-    point q = make_point(0, 0);
+    point q = make_point(res.data[0][0] / res.data[2][0], res.data[1][0] / res.data[2][0]);
     return q;
 }
 
@@ -177,8 +216,7 @@ point project_point(matrix H, point p)
 // returns: L2 distance between them.
 float point_distance(point p, point q)
 {
-    // TODO: should be a quick one.
-    return 0;
+    return sqrt(pow(p.x - q.x, 2) + pow(p.y - q.y, 2));
 }
 
 // Count number of inliers in a set of matches. Should also bring inliers
@@ -194,9 +232,18 @@ int model_inliers(matrix H, match *m, int n, float thresh)
 {
     int i;
     int count = 0;
-    // TODO: count number of matches that are inliers
+    // count number of matches that are inliers
     // i.e. distance(H*p, q) < thresh
     // Also, sort the matches m so the inliers are the first 'count' elements.
+    for (i = 0; i < n; i++) {
+        match curr_m = m[i];
+        if (point_distance(project_point(H, curr_m.p), curr_m.q) < thresh) {
+            match m_count = m[count];
+            m[count] = m[i];
+            m[i] = m_count;
+            count++;
+        }
+    }
     return count;
 }
 
@@ -205,7 +252,13 @@ int model_inliers(matrix H, match *m, int n, float thresh)
 // int n: number of elements in matches.
 void randomize_matches(match *m, int n)
 {
-    // TODO: implement Fisher-Yates to shuffle the array.
+    // Fisher-Yates to shuffle the array.
+    for (int i  = n-1; n >= 1; n--) {
+        int j = rand() % (i + 1);
+        match m_j = m[j];
+        m[j] = m[i];
+        m[i] = m_j;
+    }
 }
 
 // Computes homography between two images given matching pixels.
@@ -219,12 +272,31 @@ matrix compute_homography(match *matches, int n)
 
     int i;
     for(i = 0; i < n; ++i){
-        double x  = matches[i].p.x;
-        double xp = matches[i].q.x;
-        double y  = matches[i].p.y;
-        double yp = matches[i].q.y;
-        // TODO: fill in the matrices M and b.
-
+        double m_x  = matches[i].p.x;
+        double n_x = matches[i].q.x;
+        double m_y  = matches[i].p.y;
+        double n_y = matches[i].q.y;
+        // fill in the matrices M and b.
+        int row1 = i * 2;
+        int row2 = (i * 2) + 1;
+        M.data[row1][0] = m_x;
+        M.data[row1][1] = m_y;
+        M.data[row1][2] = 1;
+        M.data[row1][3] = 0;
+        M.data[row1][4] = 0;
+        M.data[row1][5] = 0;
+        M.data[row1][6] = -m_x * n_x;
+        M.data[row1][7] = -m_y * n_x;
+        M.data[row2][0] = 0;
+        M.data[row2][1] = 0;
+        M.data[row2][2] = 0;
+        M.data[row2][3] = m_x;
+        M.data[row2][4] = m_y;
+        M.data[row2][5] = 1;
+        M.data[row2][6] = -m_x * n_y;
+        M.data[row2][7] = -m_y * n_y;
+        b.data[row1][0] = n_x;
+        b.data[row2][0] = n_y;
     }
     matrix a = solve_system(M, b);
     free_matrix(M); free_matrix(b); 
@@ -234,8 +306,16 @@ matrix compute_homography(match *matches, int n)
     if(!a.data) return none;
 
     matrix H = make_matrix(3, 3);
-    // TODO: fill in the homography H based on the result in a.
-
+    // fill in the homography H based on the result in a.
+    H.data[0][0] = a.data[0][0];
+    H.data[0][1] = a.data[1][0];
+    H.data[0][2] = a.data[2][0];
+    H.data[1][0] = a.data[3][0];
+    H.data[1][1] = a.data[4][0];
+    H.data[1][2] = a.data[5][0];
+    H.data[2][0] = a.data[6][0];
+    H.data[2][1] = a.data[7][0];
+    H.data[2][2] = 1;
 
     free_matrix(a);
     return H;
@@ -253,7 +333,8 @@ matrix RANSAC(match *m, int n, float thresh, int k, int cutoff)
     int e;
     int best = 0;
     matrix Hb = make_translation_homography(256, 0);
-    // TODO: fill in RANSAC algorithm.
+    printf("thresh=%f", thresh);
+    // Run RANSAC algorithm.
     // for k iterations:
     //     shuffle the matches
     //     compute a homography with a few matches (how many??)
@@ -263,6 +344,24 @@ matrix RANSAC(match *m, int n, float thresh, int k, int cutoff)
     //         if it's better than the cutoff:
     //             return it immediately
     // if we get to the end return the best homography
+    for (e = 0; e < k; e++) {
+        randomize_matches(m, n);
+        matrix H = compute_homography(m, 4);
+        if (!H.data) {
+            continue;
+        }
+        int num_inliers = model_inliers(H, m, n, thresh);  // TODO: Maybe the 4 should actually be n
+        if (num_inliers > best) {
+            Hb = compute_homography(m, num_inliers);
+            // if (!H.data) {
+            //     continue;
+            // }
+            best = model_inliers(Hb, m, n, thresh);
+            if (best > cutoff) {
+                return Hb;
+            }
+        }
+    }
     return Hb;
 }
 
@@ -307,16 +406,30 @@ image combine_images(image a, image b, matrix H)
     for(k = 0; k < a.c; ++k){
         for(j = 0; j < a.h; ++j){
             for(i = 0; i < a.w; ++i){
-                // TODO: fill in.
+                float v = get_pixel(a, i, j, k);
+                set_pixel(c, dx + i, dy + j, k, v);
             }
         }
     }
 
-    // TODO: Paste in image b as well.
+    // Paste in image b as well.
     // You should loop over some points in the new image (which? all?)
     // and see if their projection from a coordinates to b coordinates falls
     // inside of the bounds of image b. If so, use bilinear interpolation to
     // estimate the value of b at that projection, then fill in image c.
+    for (k = 0; k < a.c; ++k){
+        for(j = topleft.y; j <= botright.y; ++j){
+            for(i = topleft.x; i <= botright.x; ++i){
+                point ij_proj = project_point(H, make_point(i,j));
+                float x_proj = ij_proj.x;
+                float y_proj = ij_proj.y;
+                if (x_proj >= 0 && x_proj < b.w && y_proj >= 0 && y_proj < b.h) {
+                    float v = bilinear_interpolate(b, x_proj, y_proj, k);
+                    set_pixel(c, dx + i, dy + j, k, v);
+                }
+            }
+        }
+    }
 
     return c;
 }
@@ -343,6 +456,7 @@ image panorama_image(image a, image b, float sigma, float thresh, int nms, float
 
     // Find matches
     match *m = match_descriptors(ad, an, bd, bn, &mn);
+    printf("here2");
 
     // Run RANSAC to find the homography
     matrix H = RANSAC(m, mn, inlier_thresh, iters, cutoff);
@@ -372,5 +486,11 @@ image cylindrical_project(image im, float f)
 {
     //TODO: project image onto a cylinder
     image c = copy_image(im);
+    // int x_c = 
+    // for (int i = 0; i < im.w; i++) {
+    //     for (int j = 0; j < im.h; j++) {
+
+    //     }
+    // }
     return c;
 }
